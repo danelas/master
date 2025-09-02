@@ -5,7 +5,7 @@ const loadingElement = document.getElementById('loading');
 const resultsElement = document.getElementById('results');
 
 // API endpoint
-const API_URL = 'http://localhost:8000/query';
+const API_URL = 'https://master-39uc.onrender.com/query';
 
 // Model display names and colors
 const modelInfo = {
