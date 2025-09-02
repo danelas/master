@@ -1,0 +1,79 @@
+/* Custom styles for AI Response Aggregator */
+
+/* Base styles */
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    line-height: 1.6;
+    color: #1f2937;
+}
+
+/* Animation for loading spinner */
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.animate-spin {
+    animation: spin 1s linear infinite;
+}
+
+/* Response card styles */
+.response-card {
+    transition: all 0.3s ease;
+    border-left: 4px solid transparent;
+}
+
+.response-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+
+/* Model-specific border colors */
+.response-card.openai {
+    border-left-color: #10a37f;
+}
+
+.response-card.anthropic {
+    border-left-color: #2e6fdb;
+}
+
+.response-card.google {
+    border-left-color: #ea4335;
+}
+
+/* Responsive adjustments */
+@media (max-width: 640px) {
+    .container {
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+    
+    .response-card {
+        margin-bottom: 1rem;
+    }
+}
+
+/* Utility classes */
+.hidden {
+    display: none;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
