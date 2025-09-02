@@ -1,8 +1,11 @@
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional, Tuple, Any
 import os
+from pathlib import Path
 import json
 import re
 from collections import Counter
@@ -190,6 +193,27 @@ def generate_combined_response(question: str, responses: Dict[str, AIResponse]) 
 
 # Initialize the FastAPI app
 app = FastAPI(title="AI Response Aggregator API")
+
+# Get the base directory
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Serve static files from the frontend directory
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "frontend")), name="static")
+
+# Serve the main HTML file
+@app.get("/")
+async def read_root():
+    return FileResponse(str(BASE_DIR / "frontend" / "index.html"))
+
+# Serve the frontend files
+@app.get("/frontend/{path:path}")
+async def serve_frontend(path: str):
+    file_path = BASE_DIR / "frontend" / path
+    if file_path.exists():
+        return FileResponse(str(file_path))
+    raise HTTPException(status_code=404, detail="File not found")
+
+# API routes will be mounted under /api
 
 # CORS middleware configuration
 app.add_middleware(
@@ -381,11 +405,11 @@ def query_ai_model(model: str, question: str) -> AIResponse:
         )
 
 # Routes
-@app.get("/")
+@app.get("/api")
 async def root():
     return {"message": "AI Response Aggregator API is running"}
 
-@app.post("/query")
+@app.post("/api/query")
 async def query_models(request: QueryRequest):
     """Query multiple AI models with the same question."""
     # Generate a unique ID for this query
