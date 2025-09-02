@@ -178,7 +178,20 @@ def generate_combined_response(question: str, responses: Dict[str, AIResponse]) 
         contradictions = analysis.get("contradictions", [])
         consensus = analysis.get("consensus_percentage", 0)
         
-        # Create a more robust prompt for the combined response
+        # Format key points and contradictions first
+        key_points_formatted = "\n".join(f"  - {point}" for point in key_points) if key_points else "  - None identified"
+        
+        if contradictions:
+            contradictions_formatted = []
+            for i, c in enumerate(contradictions, 1):
+                topic = c.get('topic', f'Issue {i}')
+                disagreements = c.get('disagreements', ['No specific details provided'])
+                contradictions_formatted.append(f"  - {topic}: {', '.join(disagreements)}")
+            contradictions_formatted = "\n".join(contradictions_formatted)
+        else:
+            contradictions_formatted = "  - No major contradictions found"
+            
+        # Create the prompt with the formatted strings
         prompt = f"""
         # TASK
         Create a single, well-structured response that combines the best elements from each model's response.
@@ -206,19 +219,6 @@ def generate_combined_response(question: str, responses: Dict[str, AIResponse]) 
         
         # FINAL COMBINED RESPONSE (in markdown):
         """.strip()
-        
-        # Format key points and contradictions
-        key_points_formatted = "\n".join(f"  - {point}" for point in key_points) if key_points else "  - None identified"
-        
-        if contradictions:
-            contradictions_formatted = []
-            for i, c in enumerate(contradictions, 1):
-                topic = c.get('topic', f'Issue {i}')
-                disagreements = c.get('disagreements', ['No specific details provided'])
-                contradictions_formatted.append(f"  - {topic}: {', '.join(disagreements)}")
-            contradictions_formatted = "\n".join(contradictions_formatted)
-        else:
-            contradictions_formatted = "  - No major contradictions found"
         
         # Get the combined response from OpenAI
         client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
