@@ -496,20 +496,48 @@ def query_ai_model(model: str, question: str) -> AIResponse:
                     "top_p": 0.9
                 }
                 
-                response = requests.post(
-                    "https://api.x.ai/v1/chat/completions",
-                    headers=headers,
-                    json=payload
-                )
+                import time
                 
-                response.raise_for_status()  # Will raise an HTTPError for bad responses
-                response_data = response.json()
+                max_retries = 3
+                retry_delay = 2  # Start with 2 seconds delay
                 
-                # Extract the response text
-                if 'choices' in response_data and len(response_data['choices']) > 0:
-                    response_text = response_data['choices'][0]['message']['content']
+                for attempt in range(max_retries):
+                    try:
+                        response = requests.post(
+                            "https://api.x.ai/v1/chat/completions",
+                            headers=headers,
+                            json=payload,
+                            timeout=30  # 30 seconds timeout
+                        )
+                        
+                        # Check for rate limit headers
+                        if response.status_code == 429:
+                            retry_after = int(response.headers.get('Retry-After', retry_delay))
+                            if attempt < max_retries - 1:
+                                wait_time = retry_after or (retry_delay * (2 ** attempt))  # Exponential backoff
+                                print(f"Rate limited. Waiting {wait_time} seconds before retry (attempt {attempt + 1}/{max_retries})...")
+                                time.sleep(wait_time)
+                                continue
+                        
+                        response.raise_for_status()  # Will raise an HTTPError for other bad responses
+                        response_data = response.json()
+                        
+                        # Extract the response text
+                        if 'choices' in response_data and len(response_data['choices']) > 0:
+                            response_text = response_data['choices'][0]['message']['content']
+                            break  # Success, exit retry loop
+                        else:
+                            raise ValueError("Unexpected response format from Grok API")
+                            
+                    except requests.exceptions.RequestException as e:
+                        if attempt == max_retries - 1:  # Last attempt
+                            raise
+                        wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                        print(f"Request failed: {str(e)}. Retrying in {wait_time} seconds...")
+                        time.sleep(wait_time)
                 else:
-                    raise ValueError("Unexpected response format from Grok API")
+                    # This block runs if the loop completes without a break
+                    raise Exception("Max retries reached for Grok API")
                 
                 return AIResponse(
                     model="grok",
