@@ -44,11 +44,14 @@ class CombinedResponse(BaseModel):
     contradictions: List[Dict[str, str]]
     consensus_percentage: float
 
-def analyze_responses(question: str, responses: Dict[str, AIResponse]) -> Dict:
+def analyze_responses(question: str, responses: Dict[str, AIResponse]) -> Dict[str, Any]:
     """Analyze and combine multiple AI responses"""
-    # Extract successful responses
-    successful_responses = {k: v.response for k, v in responses.items() if v.status == "success"}
-    
+    # Filter out failed responses
+    successful_responses = {}
+    for model, response in responses.items():
+        if response.status == "success":
+            successful_responses[model] = response.response
+
     if not successful_responses:
         return {
             "summary": "No successful responses from any model.",
@@ -56,64 +59,82 @@ def analyze_responses(question: str, responses: Dict[str, AIResponse]) -> Dict:
             "contradictions": [],
             "consensus_percentage": 0.0
         }
-    
-    # Format the responses for the prompt
-    responses_text = "\n\n".join([f"{model.upper()}:\n{response}" for model, response in successful_responses.items()])
-    
-    # Groq client is now initialized at the module level
 
-    # Use OpenAI to analyze and combine responses
-    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    
-    # Create a prompt to analyze the responses
-    analysis_prompt = f"""
-    You are an expert analyst comparing responses from multiple AI models to the following question:
-    
-    QUESTION: {question}
-    
-    Here are the responses from different AI models:
-    {responses_text}
-    
-    Your task is to:
-    1. Identify the key points that are consistent across most responses
-    2. Note any significant contradictions or differences between the responses
-    3. Create a comprehensive, well-structured combined response that incorporates the best elements from each
-    4. Calculate the percentage of consensus between the models
-    
-    Return your analysis as a JSON object with the following structure:
-    {{
-        "summary": "A brief summary of the overall findings",
-        "key_points": ["List of key points that most models agreed on"],
-        "contradictions": [
-            {{
-                "issue": "Description of the contradiction",
-                "models": ["model1", "model2"],
-                "responses": ["response1", "response2"]
-            }}
-        ],
-        "consensus_percentage": 0.0  # 0-100% how much the models agree
-    }}
-    """
-    
-    # Get the analysis from OpenAI
-    response = client.chat.completions.create(
-        model="gpt-4-turbo",
-        messages=[
-            {"role": "system", "content": "You are an expert analyst that compares and combines responses from multiple AI models."},
-            {"role": "user", "content": analysis_prompt.format(question=question, responses_text=responses_text)}
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.3
+    # If there's only one response, return it directly
+    if len(successful_responses) == 1:
+        model, response = next(iter(successful_responses.items()))
+        return {
+            "summary": f"Only {model} responded. " + response[:500] + ("..." if len(response) > 500 else ""),
+            "key_points": response.split(". ")[:3],  # First 3 sentences as key points
+            "contradictions": [],
+            "consensus_percentage": 100.0
+        }
+
+    # Prepare the responses text for analysis
+    responses_text = "\n\n".join(
+        f"--- {model.upper()} ---\n{response}"
+        for model, response in successful_responses.items()
     )
     
+    # Create a prompt for the analysis
+    analysis_prompt = """
+    Analyze the following responses to the question: {question}
+    
+    RESPONSES:
+    {responses_text}
+    
+    Please provide a detailed analysis that includes:
+    1. A summary of the key points where the models agree
+    2. Any significant differences or contradictions between the responses
+    3. A consensus percentage (0-100%) indicating how much the responses agree with each other
+    
+    Format your response as a JSON object with these keys:
+    - summary: A brief summary of the overall consensus
+    - key_points: List of main points where most models agree (3-5 points)
+    - contradictions: List of dictionaries with 'topic' and 'disagreements' (list of model: response)
+    - consensus_percentage: A number from 0 to 100
+    
+    IMPORTANT: The consensus percentage should be high (70-100%) if the responses generally agree,
+    even if they use different wording. Only mark as low consensus if there are actual contradictions
+    in facts or conclusions.
+    """
+    
     try:
+        # Get the analysis from OpenAI
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=[
+                {"role": "system", "content": "You are an expert analyst that compares and combines responses from multiple AI models."},
+                {"role": "user", "content": analysis_prompt.format(question=question, responses_text=responses_text)}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3
+        )
+        
         # Parse the JSON response
         analysis = json.loads(response.choices[0].message.content)
+        
+        # Ensure all required fields are present
+        analysis.setdefault("summary", "Analysis completed, but no summary was generated.")
+        analysis.setdefault("key_points", [])
+        analysis.setdefault("contradictions", [])
+        analysis.setdefault("consensus_percentage", 50.0)  # Default to 50% if not provided
+        
+        # Ensure consensus percentage is a float between 0 and 100
+        try:
+            consensus = float(analysis["consensus_percentage"])
+            analysis["consensus_percentage"] = max(0.0, min(100.0, consensus))
+        except (TypeError, ValueError):
+            analysis["consensus_percentage"] = 50.0
+            
         return analysis
-    except json.JSONDecodeError:
-        # Fallback if JSON parsing fails
+        
+    except Exception as e:
+        print(f"Error in analyze_responses: {str(e)}")
+        # Fallback if anything goes wrong
         return {
-            "summary": "Analysis completed, but could not parse the detailed results.",
+            "summary": "Analysis completed, but an error occurred during processing.",
             "key_points": [],
             "contradictions": [],
             "consensus_percentage": 0.0
@@ -121,57 +142,80 @@ def analyze_responses(question: str, responses: Dict[str, AIResponse]) -> Dict:
 
 def generate_combined_response(question: str, responses: Dict[str, AIResponse]) -> Dict[str, Any]:
     """Generate a combined response by analyzing multiple AI responses."""
-    # Filter out failed responses
-    successful_responses = {}
-    for model, response in responses.items():
-        if response.status == "success":
-            successful_responses[model] = response.response
     # First, analyze the responses
     analysis = analyze_responses(question, responses)
     
     # Get successful responses
     successful_responses = {k: v.response for k, v in responses.items() if v.status == "success"}
     
-    # If we have at least one successful response, use it to generate a combined answer
-    if successful_responses:
-        # Use the first successful response as a base
-        base_response = next(iter(successful_responses.values()))
-        
-        # Format the responses and analysis for the prompt
-        responses_text = "\n\n".join([f"{model.upper()}:\n{response}" for model, response in successful_responses.items()])
-        analysis_text = json.dumps(analysis, indent=2)
+    if not successful_responses:
+        analysis["combined_answer"] = "No successful responses from any model."
+        return analysis
+    
+    # If there's only one response, use it directly
+    if len(successful_responses) == 1:
+        model, response = next(iter(successful_responses.items()))
+        analysis["combined_answer"] = f"# Combined Response\n\nOnly {model.upper()} provided a response. Here it is:\n\n{response}"
+        return analysis
+    
+    try:
+        # Format the responses for the prompt
+        responses_text = "\n\n".join(
+            f"## {model.upper()}\n{response}"
+            for model, response in successful_responses.items()
+        )
         
         # Create a prompt to generate a combined response
-        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        
-        prompt = f"""
+        prompt = """
         You are an expert at synthesizing information from multiple AI model responses.
         
-        QUESTION: {question}
+        # TASK
+        Create a SINGLE, WELL-STRUCTURED response that combines the best elements from each model's response.
         
-        Here are the original responses from different AI models:
+        # QUESTION
+        {question}
+        
+        # ORIGINAL RESPONSES
         {responses_text}
         
-        Here's the analysis of these responses:
-        {analysis_text}
+        # ANALYSIS OF RESPONSES
+        - Consensus: {consensus_percentage}% of the responses agree on key points
+        - Key points of agreement: {key_points}
+        - Areas of disagreement: {contradictions}
         
-        Your task is to create a SINGLE, WELL-STRUCTURED response that:
-        1. Incorporates the best elements from each response
-        2. Resolves any contradictions in favor of the most accurate information
-        3. Is clear, concise, and comprehensive
-        4. Acknowledges any remaining uncertainties or areas of disagreement
+        # INSTRUCTIONS
+        1. Start with a clear, concise introduction that answers the question directly
+        2. Organize the content with clear headings and subheadings
+        3. Use bullet points for better readability
+        4. Highlight areas of consensus (where most models agree)
+        5. Note any important disagreements between models
+        6. If there are contradictions, present the most likely answer and note the disagreement
+        7. End with a brief summary or conclusion
         
-        Make sure to:
-        - Start with a brief introduction
-        - Organize the content with clear headings
-        - Use bullet points for key information
-        - Highlight areas of consensus and disagreement
-        - End with a concise summary
+        # FORMATTING
+        - Use Markdown for formatting
+        - Use headings (##, ###) to organize sections
+        - Use bullet points for lists
+        - Use **bold** for emphasis on key points
+        - Use > for important notes or caveats
         
-        FINAL COMBINED RESPONSE:
+        # FINAL COMBINED RESPONSE:
         """
         
+        # Prepare the prompt variables
+        key_points = "\n- " + "\n- ".join(analysis.get("key_points", ["No key points identified"]))
+        
+        contradictions = "\n- "
+        if analysis.get("contradictions"):
+            contradictions += "\n- ".join(
+                f"{c.get('topic', 'Unknown topic')}: {', '.join(c.get('disagreements', []))}"
+                for c in analysis.get("contradictions", [])
+            )
+        else:
+            contradictions += "No major contradictions found"
+        
         # Get the combined response from OpenAI
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         response = client.chat.completions.create(
             model="gpt-4-turbo",
             messages=[
@@ -179,7 +223,9 @@ def generate_combined_response(question: str, responses: Dict[str, AIResponse]) 
                 {"role": "user", "content": prompt.format(
                     question=question,
                     responses_text=responses_text,
-                    analysis_text=analysis_text
+                    consensus_percentage=analysis.get("consensus_percentage", 0),
+                    key_points=key_points,
+                    contradictions=contradictions
                 )}
             ],
             temperature=0.3,
@@ -188,6 +234,15 @@ def generate_combined_response(question: str, responses: Dict[str, AIResponse]) 
         
         # Add the combined response to the analysis
         analysis["combined_answer"] = response.choices[0].message.content
+        
+    except Exception as e:
+        print(f"Error generating combined response: {str(e)}")
+        analysis["combined_answer"] = "\n\n**Note**: An error occurred while generating the combined response. Please see individual model responses above."
+        
+        # If we have at least one response, include it as a fallback
+        if successful_responses:
+            model, response = next(iter(successful_responses.items()))
+            analysis["combined_answer"] += f"\n\nHere's the response from {model}:\n\n{response}"
     
     return analysis
 
@@ -261,14 +316,29 @@ def query_ai_model(model: str, question: str) -> AIResponse:
             print(f"Using OpenAI API with key: {openai_api_key[:5]}...")  # Log first 5 chars of key
             
             client = openai.OpenAI(api_key=openai_api_key)
+            system_prompt = """You are a knowledgeable and thorough assistant. Please provide a detailed, well-structured response that thoroughly addresses the user's question. 
+            
+            Guidelines for your response:
+            1. Start with a clear, direct answer to the question
+            2. Provide comprehensive details and explanations
+            3. Use markdown formatting with appropriate headings, bullet points, and paragraphs
+            4. Include relevant examples or evidence to support your points
+            5. If applicable, mention any limitations or alternative perspectives
+            6. Conclude with a brief summary
+            
+            Aim for a response length of 300-500 words for most questions, unless the question is very simple."""
+            
             response = client.chat.completions.create(
                 model="gpt-4-turbo",
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that provides accurate and concise answers."},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": question}
                 ],
                 temperature=0.7,
-                max_tokens=1000
+                max_tokens=2000,
+                top_p=0.9,
+                frequency_penalty=0.2,
+                presence_penalty=0.2
             )
             response_text = response.choices[0].message.content
             print(f"Successfully got response from {model}, length: {len(response_text)} chars")
@@ -354,23 +424,49 @@ def query_ai_model(model: str, question: str) -> AIResponse:
             
         elif model == "grok":
             try:
-                if not grok_client:
-                    raise ValueError("Grok API key not properly configured. Please check your GROK_API_KEY in the .env file.")
+                grok_api_key = os.getenv("GROK_API_KEY")
+                if not grok_api_key:
+                    raise ValueError("Grok API key not found in environment variables")
                 
                 print("Sending request to Grok API...")
-                response = grok_client.chat.completions.create(
-                    model="mixtral-8x7b-32768",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful and concise assistant."},
-                        {"role": "user", "content": question}
+                
+                import requests
+                import json
+                
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {grok_api_key}"
+                }
+                
+                payload = {
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "You are a helpful and knowledgeable assistant that provides detailed and accurate responses."
+                        },
+                        {
+                            "role": "user",
+                            "content": question
+                        }
                     ],
-                    temperature=0.7,
-                    max_tokens=1000
+                    "model": "grok-4-latest",
+                    "temperature": 0.7,
+                    "max_tokens": 2000,
+                    "top_p": 0.9
+                }
+                
+                response = requests.post(
+                    "https://api.x.ai/v1/chat/completions",
+                    headers=headers,
+                    json=payload
                 )
                 
-                # Handle the response
-                if hasattr(response, 'choices') and len(response.choices) > 0:
-                    response_text = response.choices[0].message.content
+                response.raise_for_status()  # Will raise an HTTPError for bad responses
+                response_data = response.json()
+                
+                # Extract the response text
+                if 'choices' in response_data and len(response_data['choices']) > 0:
+                    response_text = response_data['choices'][0]['message']['content']
                 else:
                     raise ValueError("Unexpected response format from Grok API")
                 
