@@ -414,7 +414,8 @@ async def root():
 async def query_models(request: QueryRequest):
     """Query multiple AI models with the same question."""
     # Generate a unique ID for this query
-    query_id = f"query_{hash(frozenset({'|'.join(request.models) + '|' + request.question}.encode('utf-8')))}"
+    query_str = f"{'|'.join(request.models)}|{request.question}"
+    query_id = f"query_{hash(query_str)}"
     
     # Validate models
     valid_models = ["openai", "anthropic", "google", "grok"]
