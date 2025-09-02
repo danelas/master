@@ -142,35 +142,54 @@ def analyze_responses(question: str, responses: Dict[str, AIResponse]) -> Dict[s
 
 def generate_combined_response(question: str, responses: Dict[str, AIResponse]) -> Dict[str, Any]:
     """Generate a combined response by analyzing multiple AI responses."""
-    # First, analyze the responses
-    analysis = analyze_responses(question, responses)
-    
-    # Get successful responses
-    successful_responses = {k: v.response for k, v in responses.items() if v.status == "success"}
-    
-    if not successful_responses:
-        analysis["combined_answer"] = "No successful responses from any model."
-        return analysis
-    
-    # If there's only one response, use it directly
-    if len(successful_responses) == 1:
-        model, response = next(iter(successful_responses.items()))
-        analysis["combined_answer"] = f"# Combined Response\n\nOnly {model.upper()} provided a response. Here it is:\n\n{response}"
-        return analysis
-    
     try:
+        # First, analyze the responses
+        analysis = analyze_responses(question, responses)
+        
+        # Get successful responses
+        successful_responses = {k: v.response for k, v in responses.items() if v.status == "success"}
+        
+        if not successful_responses:
+            return {
+                "combined_answer": "# Combined Response\n\nNo successful responses from any model.",
+                "key_points": [],
+                "contradictions": [],
+                "consensus_percentage": 0.0
+            }
+        
+        # If there's only one response, use it directly with better formatting
+        if len(successful_responses) == 1:
+            model, response = next(iter(successful_responses.items()))
+            return {
+                "combined_answer": f"# Combined Response\n\nOnly {model.upper()} provided a response. Here it is:\n\n---\n\n{response}",
+                "key_points": analysis.get("key_points", []),
+                "contradictions": [],
+                "consensus_percentage": 100.0
+            }
+        
         # Format the responses for the prompt
         responses_text = "\n\n".join(
             f"## {model.upper()}\n{response}"
             for model, response in successful_responses.items()
         )
         
-        # Create a prompt to generate a combined response
-        prompt = """
-        You are an expert at synthesizing information from multiple AI model responses.
+        # Prepare analysis components
+        key_points = analysis.get("key_points", ["No key points identified"])
+        contradictions = analysis.get("contradictions", [])
+        consensus = analysis.get("consensus_percentage", 0)
         
+        # Create a more robust prompt for the combined response
+        prompt = f"""
         # TASK
-        Create a SINGLE, WELL-STRUCTURED response that combines the best elements from each model's response.
+        Create a single, well-structured response that combines the best elements from each model's response.
+        
+        # INSTRUCTIONS
+        1. Start with a clear, direct answer to the question
+        2. Organize content with clear sections and subsections
+        3. Highlight areas of agreement between models
+        4. Note any important disagreements and provide context
+        5. Use markdown formatting (headings, bullet points, bold for emphasis)
+        6. Maintain a neutral, informative tone
         
         # QUESTION
         {question}
@@ -178,71 +197,93 @@ def generate_combined_response(question: str, responses: Dict[str, AIResponse]) 
         # ORIGINAL RESPONSES
         {responses_text}
         
-        # ANALYSIS OF RESPONSES
-        - Consensus: {consensus_percentage}% of the responses agree on key points
-        - Key points of agreement: {key_points}
-        - Areas of disagreement: {contradictions}
+        # ANALYSIS
+        - Consensus: {consensus}% of the responses agree on key points
+        - Key points of agreement:
+        {key_points_formatted}
+        - Areas of disagreement:
+        {contradictions_formatted}
         
-        # INSTRUCTIONS
-        1. Start with a clear, concise introduction that answers the question directly
-        2. Organize the content with clear headings and subheadings
-        3. Use bullet points for better readability
-        4. Highlight areas of consensus (where most models agree)
-        5. Note any important disagreements between models
-        6. If there are contradictions, present the most likely answer and note the disagreement
-        7. End with a brief summary or conclusion
+        # FINAL COMBINED RESPONSE (in markdown):
+        """.strip()
         
-        # FORMATTING
-        - Use Markdown for formatting
-        - Use headings (##, ###) to organize sections
-        - Use bullet points for lists
-        - Use **bold** for emphasis on key points
-        - Use > for important notes or caveats
+        # Format key points and contradictions
+        key_points_formatted = "\n".join(f"  - {point}" for point in key_points) if key_points else "  - None identified"
         
-        # FINAL COMBINED RESPONSE:
-        """
-        
-        # Prepare the prompt variables
-        key_points = "\n- " + "\n- ".join(analysis.get("key_points", ["No key points identified"]))
-        
-        contradictions = "\n- "
-        if analysis.get("contradictions"):
-            contradictions += "\n- ".join(
-                f"{c.get('topic', 'Unknown topic')}: {', '.join(c.get('disagreements', []))}"
-                for c in analysis.get("contradictions", [])
-            )
+        if contradictions:
+            contradictions_formatted = []
+            for i, c in enumerate(contradictions, 1):
+                topic = c.get('topic', f'Issue {i}')
+                disagreements = c.get('disagreements', ['No specific details provided'])
+                contradictions_formatted.append(f"  - {topic}: {', '.join(disagreements)}")
+            contradictions_formatted = "\n".join(contradictions_formatted)
         else:
-            contradictions += "No major contradictions found"
+            contradictions_formatted = "  - No major contradictions found"
         
         # Get the combined response from OpenAI
         client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = client.chat.completions.create(
-            model="gpt-4-turbo",
-            messages=[
-                {"role": "system", "content": "You are an expert at synthesizing information from multiple AI model responses."},
-                {"role": "user", "content": prompt.format(
-                    question=question,
-                    responses_text=responses_text,
-                    consensus_percentage=analysis.get("consensus_percentage", 0),
-                    key_points=key_points,
-                    contradictions=contradictions
-                )}
-            ],
-            temperature=0.3,
-            max_tokens=2000
-        )
         
-        # Add the combined response to the analysis
-        analysis["combined_answer"] = response.choices[0].message.content
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4-turbo",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert at synthesizing information from multiple AI model responses. "
+                                 "Your task is to create a single, coherent response that combines the best elements "
+                                 "from each model's output while maintaining accuracy and clarity."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt.format(
+                            question=question,
+                            responses_text=responses_text,
+                            consensus=consensus,
+                            key_points_formatted=key_points_formatted,
+                            contradictions_formatted=contradictions_formatted
+                        )
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=2000,
+                top_p=0.9
+            )
+            
+            combined_answer = response.choices[0].message.content.strip()
+            
+            # Ensure the response is properly formatted
+            if not combined_answer.startswith('#'):
+                combined_answer = f"# Combined Response\n\n{combined_answer}"
+                
+            return {
+                "combined_answer": combined_answer,
+                "key_points": key_points,
+                "contradictions": contradictions,
+                "consensus_percentage": consensus
+            }
+            
+        except Exception as e:
+            print(f"Error calling OpenAI API: {str(e)}")
+            raise
         
     except Exception as e:
-        print(f"Error generating combined response: {str(e)}")
-        analysis["combined_answer"] = "\n\n**Note**: An error occurred while generating the combined response. Please see individual model responses above."
+        print(f"Error in generate_combined_response: {str(e)}")
+        import traceback
+        traceback.print_exc()
         
-        # If we have at least one response, include it as a fallback
-        if successful_responses:
-            model, response = next(iter(successful_responses.items()))
-            analysis["combined_answer"] += f"\n\nHere's the response from {model}:\n\n{response}"
+        # Fallback response
+        successful_responses = {k: v.response for k, v in responses.items() if v.status == "success"}
+        fallback_response = "# Combined Response\n\nWe encountered an error generating the combined analysis. Here are the individual responses:\n\n"
+        
+        for model, response in successful_responses.items():
+            fallback_response += f"## {model.upper()}\n{response}\n\n"
+            
+        return {
+            "combined_answer": fallback_response,
+            "key_points": ["Error occurred during response generation"],
+            "contradictions": [{"topic": "System Error", "disagreements": [str(e)[:200]]}],
+            "consensus_percentage": 0.0
+        }
     
     return analysis
 
