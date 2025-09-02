@@ -251,6 +251,9 @@ function displayResults(data) {
     });
 }
 
+// Add event listeners
+submitBtn.addEventListener('click', submitQuestion);
+
 // Add event listener for Enter key in the textarea
 questionInput.addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
