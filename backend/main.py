@@ -192,28 +192,29 @@ def generate_combined_response(question: str, responses: Dict[str, AIResponse]) 
     return analysis
 
 # Initialize the FastAPI app
-app = FastAPI(title="AI Response Aggregator API")
+app = FastAPI(title="AI Response Aggregator API", docs_url=None, redoc_url=None)
 
 # Get the base directory
 BASE_DIR = Path(__file__).resolve().parent.parent
+FRONTEND_DIR = BASE_DIR / "frontend"
 
 # Serve static files from the frontend directory
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "frontend")), name="static")
-
-# Serve the main HTML file
-@app.get("/")
-async def read_root():
-    return FileResponse(str(BASE_DIR / "frontend" / "index.html"))
+app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 # Serve the frontend files
-@app.get("/frontend/{path:path}")
-async def serve_frontend(path: str):
-    file_path = BASE_DIR / "frontend" / path
-    if file_path.exists():
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    # Handle root path
+    if not full_path or full_path == "index.html":
+        return FileResponse(str(FRONTEND_DIR / "index.html"))
+    
+    # Try to serve the requested file
+    file_path = FRONTEND_DIR / full_path
+    if file_path.exists() and file_path.is_file():
         return FileResponse(str(file_path))
-    raise HTTPException(status_code=404, detail="File not found")
-
-# API routes will be mounted under /api
+    
+    # For SPA routing, serve index.html and let the frontend handle routing
+    return FileResponse(str(FRONTEND_DIR / "index.html"))
 
 # CORS middleware configuration
 app.add_middleware(
