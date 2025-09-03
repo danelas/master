@@ -497,47 +497,73 @@ def query_ai_model(model: str, question: str) -> AIResponse:
                 }
                 
                 import time
+                import json
                 
                 max_retries = 3
-                retry_delay = 2  # Start with 2 seconds delay
+                retry_delay = 5  # Increased initial delay to 5 seconds
+                
+                print(f"Preparing Grok API request with payload: {json.dumps(payload, indent=2)}")
                 
                 for attempt in range(max_retries):
                     try:
+                        print(f"Attempt {attempt + 1}/{max_retries} to call Grok API...")
                         response = requests.post(
                             "https://api.x.ai/v1/chat/completions",
                             headers=headers,
                             json=payload,
-                            timeout=30  # 30 seconds timeout
+                            timeout=30,
                         )
                         
-                        # Check for rate limit headers
+                        # Log response headers for debugging
+                        print(f"Response status: {response.status_code}")
+                        print("Response headers:")
+                        for k, v in response.headers.items():
+                            print(f"  {k}: {v}")
+                        
+                        # Check for rate limit
                         if response.status_code == 429:
                             retry_after = int(response.headers.get('Retry-After', retry_delay))
+                            wait_time = retry_after or (retry_delay * (2 ** attempt))
+                            print(f"Rate limited. Waiting {wait_time} seconds before retry...")
                             if attempt < max_retries - 1:
-                                wait_time = retry_after or (retry_delay * (2 ** attempt))  # Exponential backoff
-                                print(f"Rate limited. Waiting {wait_time} seconds before retry (attempt {attempt + 1}/{max_retries})...")
                                 time.sleep(wait_time)
                                 continue
+                            else:
+                                raise Exception(f"Rate limit reached after {max_retries} attempts")
                         
-                        response.raise_for_status()  # Will raise an HTTPError for other bad responses
-                        response_data = response.json()
+                        # Check for other errors
+                        response.raise_for_status()
                         
-                        # Extract the response text
-                        if 'choices' in response_data and len(response_data['choices']) > 0:
-                            response_text = response_data['choices'][0]['message']['content']
-                            break  # Success, exit retry loop
-                        else:
-                            raise ValueError("Unexpected response format from Grok API")
+                        # Try to parse response
+                        try:
+                            response_data = response.json()
+                            print(f"Response data: {json.dumps(response_data, indent=2)}")
+                            
+                            if 'choices' in response_data and response_data['choices']:
+                                response_text = response_data['choices'][0]['message']['content']
+                                print("Successfully received response from Grok API")
+                                break  # Success, exit retry loop
+                            else:
+                                raise ValueError("Unexpected response format: Missing 'choices' in response")
+                                
+                        except (ValueError, KeyError) as e:
+                            print(f"Error parsing Grok API response: {str(e)}")
+                            print(f"Raw response: {response.text}")
+                            raise
                             
                     except requests.exceptions.RequestException as e:
-                        if attempt == max_retries - 1:  # Last attempt
+                        print(f"Request failed (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                        if attempt == max_retries - 1:
+                            if hasattr(e, 'response') and e.response is not None:
+                                print(f"Response status: {e.response.status_code}")
+                                print(f"Response text: {e.response.text}")
                             raise
-                        wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
-                        print(f"Request failed: {str(e)}. Retrying in {wait_time} seconds...")
+                            
+                        wait_time = retry_delay * (2 ** attempt)
+                        print(f"Waiting {wait_time} seconds before retry...")
                         time.sleep(wait_time)
                 else:
-                    # This block runs if the loop completes without a break
-                    raise Exception("Max retries reached for Grok API")
+                    raise Exception(f"Failed to get valid response from Grok API after {max_retries} attempts")
                 
                 return AIResponse(
                     model="grok",
