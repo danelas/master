@@ -45,97 +45,120 @@ class CombinedResponse(BaseModel):
     consensus_percentage: float
 
 def analyze_responses(question: str, responses: Dict[str, AIResponse]) -> Dict[str, Any]:
-    """Analyze and combine multiple AI responses"""
-    # Filter out failed responses
-    successful_responses = {}
-    for model, response in responses.items():
-        if response.status == "success":
-            successful_responses[model] = response.response
-
-    if not successful_responses:
-        return {
-            "summary": "No successful responses from any model.",
-            "key_points": [],
-            "contradictions": [],
-            "consensus_percentage": 0.0
-        }
-
-    # If there's only one response, return it directly
-    if len(successful_responses) == 1:
-        model, response = next(iter(successful_responses.items()))
-        return {
-            "summary": f"Only {model} responded. " + response[:500] + ("..." if len(response) > 500 else ""),
-            "key_points": response.split(". ")[:3],  # First 3 sentences as key points
-            "contradictions": [],
-            "consensus_percentage": 100.0
-        }
-
-    # Prepare the responses text for analysis
-    responses_text = "\n\n".join(
-        f"--- {model.upper()} ---\n{response}"
-        for model, response in successful_responses.items()
-    )
-    
-    # Create a prompt for the analysis
-    analysis_prompt = """
-    Analyze the following responses to the question: {question}
-    
-    RESPONSES:
-    {responses_text}
-    
-    Please provide a detailed analysis that includes:
-    1. A summary of the key points where the models agree
-    2. Any significant differences or contradictions between the responses
-    3. A consensus percentage (0-100%) indicating how much the responses agree with each other
-    
-    Format your response as a JSON object with these keys:
-    - summary: A brief summary of the overall consensus
-    - key_points: List of main points where most models agree (3-5 points)
-    - contradictions: List of dictionaries with 'topic' and 'disagreements' (list of model: response)
-    - consensus_percentage: A number from 0 to 100
-    
-    IMPORTANT: The consensus percentage should be high (70-100%) if the responses generally agree,
-    even if they use different wording. Only mark as low consensus if there are actual contradictions
-    in facts or conclusions.
-    """
-    
+    """Analyze and combine multiple AI responses with enhanced error handling"""
     try:
-        # Get the analysis from OpenAI
-        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = client.chat.completions.create(
-            model="gpt-4-turbo",
-            messages=[
-                {"role": "system", "content": "You are an expert analyst that compares and combines responses from multiple AI models."},
-                {"role": "user", "content": analysis_prompt.format(question=question, responses_text=responses_text)}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.3
+        print("\n=== Starting Response Analysis ===")
+        # Filter out failed responses
+        successful_responses = {}
+        for model, response in responses.items():
+            if response.status == "success":
+                successful_responses[model] = response.response
+                print(f"- {model}: Success (length: {len(response.response)} chars)")
+            else:
+                print(f"- {model}: {response.status} - {response.response[:100]}...")
+
+        if not successful_responses:
+            print("No successful responses to analyze")
+            return {
+                "summary": "No successful responses from any model.",
+                "key_points": ["No responses available for analysis"],
+                "contradictions": [],
+                "consensus_percentage": 0.0
+            }
+
+        # If there's only one response, return it with basic analysis
+        if len(successful_responses) == 1:
+            model, response = next(iter(successful_responses.items()))
+            print(f"Only one successful response from {model}")
+            # Extract first 3 meaningful sentences as key points
+            sentences = [s.strip() for s in response.split('. ') if s.strip()]
+            key_points = sentences[:3] if len(sentences) > 2 else ["Key points could not be extracted"]
+            
+            return {
+                "summary": f"Only {model} responded. " + response[:500] + ("..." if len(response) > 500 else ""),
+                "key_points": key_points,
+                "contradictions": [],
+                "consensus_percentage": 100.0
+            }
+            
+        # Prepare the responses text for analysis
+        responses_text = "\n\n".join(
+            f"--- {model.upper()} ---\n{response}"
+            for model, response in successful_responses.items()
         )
         
-        # Parse the JSON response
-        analysis = json.loads(response.choices[0].message.content)
+        # Create a prompt for the analysis
+        analysis_prompt = """
+        Analyze the following responses to the question: {question}
         
-        # Ensure all required fields are present
-        analysis.setdefault("summary", "Analysis completed, but no summary was generated.")
-        analysis.setdefault("key_points", [])
-        analysis.setdefault("contradictions", [])
-        analysis.setdefault("consensus_percentage", 50.0)  # Default to 50% if not provided
+        RESPONSES:
+        {responses_text}
         
-        # Ensure consensus percentage is a float between 0 and 100
+        Please provide a detailed analysis that includes:
+        1. A summary of the key points where the models agree
+        2. Any significant differences or contradictions between the responses
+        3. A consensus percentage (0-100%) indicating how much the responses agree with each other
+        
+        Format your response as a JSON object with these keys:
+        - summary: A brief summary of the overall consensus
+        - key_points: List of main points where most models agree (3-5 points)
+        - contradictions: List of dictionaries with 'topic' and 'disagreements' (list of model: response)
+        - consensus_percentage: A number from 0 to 100
+        
+        IMPORTANT: The consensus percentage should be high (70-100%) if the responses generally agree,
+        even if they use different wording. Only mark as low consensus if there are actual contradictions
+        in facts or conclusions.
+        """
+        
+        # Call OpenAI to analyze the responses
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
         try:
-            consensus = float(analysis["consensus_percentage"])
-            analysis["consensus_percentage"] = max(0.0, min(100.0, consensus))
-        except (TypeError, ValueError):
-            analysis["consensus_percentage"] = 50.0
+            response = client.chat.completions.create(
+                model="gpt-4-turbo",
+                messages=[
+                    {"role": "system", "content": "You are an expert at analyzing and summarizing multiple AI responses."},
+                    {"role": "user", "content": analysis_prompt.format(question=question, responses_text=responses_text)}
+                ],
+                temperature=0.3,
+                max_tokens=2000
+            )
             
-        return analysis
-        
+            # Parse the response
+            analysis_text = response.choices[0].message.content
+            print(f"Analysis response: {analysis_text[:200]}...")  # Log first 200 chars
+            
+            # Try to parse as JSON
+            try:
+                import json
+                analysis = json.loads(analysis_text)
+                
+                # Ensure all required fields are present
+                if not all(key in analysis for key in ["summary", "key_points", "contradictions", "consensus_percentage"]):
+                    raise ValueError("Missing required fields in analysis")
+                    
+                return analysis
+                
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"Error parsing analysis response: {e}")
+                # Fallback to a basic analysis
+                return {
+                    "summary": f"Analysis completed but encountered format issues. {analysis_text[:500]}",
+                    "key_points": ["Analysis format issue - see summary for details"],
+                    "contradictions": [],
+                    "consensus_percentage": 50.0  # Neutral consensus
+                }
+                
+        except Exception as e:
+            print(f"Error during analysis: {str(e)}")
+            raise
+            
     except Exception as e:
-        print(f"Error in analyze_responses: {str(e)}")
-        # Fallback if anything goes wrong
+        print(f"Unexpected error in analyze_responses: {str(e)}")
+        # Return a safe fallback response
         return {
-            "summary": "Analysis completed, but an error occurred during processing.",
-            "key_points": [],
+            "summary": "An error occurred while analyzing the responses.",
+            "key_points": ["Analysis could not be completed due to an error"],
             "contradictions": [],
             "consensus_percentage": 0.0
         }
@@ -152,31 +175,30 @@ def generate_combined_response(question: str, responses: Dict[str, AIResponse]) 
         if not successful_responses:
             return {
                 "combined_answer": "# Combined Response\n\nNo successful responses from any model.",
-                "key_points": [],
+                "key_points": ["No responses available for analysis"],
                 "contradictions": [],
                 "consensus_percentage": 0.0
             }
-        
-        # If there's only one response, use it directly with better formatting
-        if len(successful_responses) == 1:
-            model, response = next(iter(successful_responses.items()))
-            return {
-                "combined_answer": f"# Combined Response\n\nOnly {model.upper()} provided a response. Here it is:\n\n---\n\n{response}",
-                "key_points": analysis.get("key_points", []),
-                "contradictions": [],
-                "consensus_percentage": 100.0
-            }
-        
-        # Format the responses for the prompt
+            
+        # Create a text version of all responses for the prompt
         responses_text = "\n\n".join(
             f"## {model.upper()}\n{response}"
             for model, response in successful_responses.items()
         )
         
-        # Prepare analysis components
-        key_points = analysis.get("key_points", ["No key points identified"])
+        # Prepare analysis components with better defaults
+        analysis = analyze_responses(question, responses)
+        key_points = analysis.get("key_points")
+        if not key_points:
+            print("Warning: No key points found in analysis, using default")
+            key_points = ["Key points could not be determined from the responses"]
+            
         contradictions = analysis.get("contradictions", [])
+        if not contradictions:
+            print("No contradictions found in analysis")
+            
         consensus = analysis.get("consensus_percentage", 0)
+        print(f"Analysis - Consensus: {consensus}%, Key Points: {len(key_points)}, Contradictions: {len(contradictions)}")
         
         # Format key points and contradictions first
         key_points_formatted = "\n".join(f"  - {point}" for point in key_points) if key_points else "  - None identified"
